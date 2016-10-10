@@ -80,7 +80,7 @@ Note the argument provided (e.g. 'kafka'), this runs the Kafka version of the de
 In src/main/resources are two gzips containing 911 call data in csv format:
 
 1. Seattle_Real_Time_Fire_911_Calls_10_Test.csv.gz contains 10 911 calls (10 lines) and can be used for simple testing.
-    Note that the application assume sthe first line contains header data, so only 9 calls are actually processed.
+    Note that the application assumes the first line contains header data, so only 9 calls are actually processed.
 2. Seattle_Real_Time_Fire_911_Calls_Chrono.csv.gz 
     A chronologically ordered set of (lots of) calls.
     

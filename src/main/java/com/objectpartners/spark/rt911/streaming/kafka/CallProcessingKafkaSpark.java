@@ -16,6 +16,7 @@ import org.apache.spark.streaming.api.java.JavaPairDStream;
 import org.apache.spark.streaming.api.java.JavaPairInputDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
 import org.apache.spark.streaming.kafka.KafkaUtils;
+import org.apache.spark.api.java.Optional;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import scala.Tuple2;
@@ -84,22 +85,45 @@ class CallProcessingKafkaSpark implements Serializable, CallProcessing {
                         topicsSet
                 );
 
-        // Get the kafka topic data
+        // get the kafka topic data
         JavaDStream<String> lines = rawDataLines.map((Function<Tuple2<String, String>, String>) Tuple2::_2);
 
         // transform to RealTime911 objects
         JavaDStream<RealTime911> callData = lines.map(map911Call);
 
-        // analyze with Spark
-        callData = sparkAnalysis.cleanData(callData);
-        if(isFilteredOnFire) {
-            sparkAnalysis.filterFireCalls(callData);
-        }
-        JavaPairDStream<String, ArrayList<RealTime911>> pairs = sparkAnalysis.mapCallsByCallType(callData);
-        JavaPairDStream<String, ArrayList<RealTime911>>  reduced = sparkAnalysis.reduceCallMapByKey(pairs);
-        JavaPairDStream<String, Long>  reducedState = sparkAnalysis.reduceStateByCallType(pairs);
+        callData = callData.map(x -> { // clean data
+            String callType = x.getCallType().replaceAll("\"", "").replaceAll("[-|,]", "");
+            x.setCallType(callType);
+            return x;
+        }).filter(pair -> { // filter data
+            return !isFilteredOnFire || pair.getCallType().matches("(?i).*\\bFire\\b.*");
+        });
 
-        sparkAnalysisWriter.reportCurrentCallTypeMicroBatch(reduced);
+        // create pairs with key of call type and value of a Java call object
+        JavaPairDStream<String, ArrayList<RealTime911>> pairs = callData.mapToPair(rt911 ->
+                new Tuple2<>(rt911.getCallType(), new ArrayList<>(Arrays.asList(rt911))));
+
+        // micro batch summary - a micro batch grouped by call type
+        // create reduced pairs with key of call type and value of the list of call java call objects of that type
+        JavaPairDStream<String, ArrayList<RealTime911>> reducedPairs = pairs.reduceByKey((a, b) -> {
+            a.addAll(b);
+            return a;
+        });
+
+        // state summary
+        // update a stateful count of calls by call type
+        JavaPairDStream<String, Long> reducedState = pairs.mapToPair(pair ->
+                new Tuple2<>(pair._1(), 1L))
+                .updateStateByKey(
+                        (List<Long> calls, Optional<Long> currentCount) -> {
+                            Long sum = currentCount.or(0L) + ((long) calls.size());
+                            return Optional.of(sum);
+                        });
+
+
+        // produce output
+
+        sparkAnalysisWriter.reportCurrentCallTypeMicroBatch(reducedPairs);
         sparkAnalysisWriter.reportCurrentCallTypeState(reducedState, isSortedByFrquency);
 
         return jssc;
